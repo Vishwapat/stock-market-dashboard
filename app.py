@@ -5,7 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
@@ -24,8 +23,11 @@ with col3:
 # --- Fetch Data ---
 @st.cache_data(ttl=300)
 def load_data(ticker, period):
-    data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
-    return data
+    raw = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+    # Fix for newer yfinance multi-level columns
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    return raw
 
 try:
     df = load_data(ticker, period)
@@ -37,23 +39,25 @@ except Exception as e:
     st.stop()
 
 df = df.copy()
-df[f"MA{ma_window}"] = df["Close"].rolling(ma_window).mean()
-df["Returns"] = df["Close"].pct_change()
-df["Volatility"] = df["Returns"].rolling(20).std() * np.sqrt(252) * 100  # annualized %
+close = df["Close"].squeeze()  # ensure it's a Series not DataFrame
+
+df[f"MA{ma_window}"] = close.rolling(ma_window).mean()
+df["Returns"] = close.pct_change()
+df["Volatility"] = df["Returns"].rolling(20).std() * np.sqrt(252) * 100
 
 # --- Summary Metrics ---
-latest = df["Close"].iloc[-1]
-start_price = df["Close"].iloc[0]
+latest = float(close.iloc[-1])
+start_price = float(close.iloc[0])
 total_return = ((latest - start_price) / start_price) * 100
-avg_vol = df["Volatility"].dropna().mean()
-max_price = df["Close"].max()
-min_price = df["Close"].min()
+avg_vol = float(df["Volatility"].dropna().mean())
+max_price = float(close.max())
+min_price = float(close.min())
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Current Price", f"${float(latest):.2f}")
-m2.metric("Total Return", f"{float(total_return):+.1f}%")
-m3.metric("Avg Annualized Volatility", f"{float(avg_vol):.1f}%")
-m4.metric(f"52-Week Range", f"${float(min_price):.2f} – ${float(max_price):.2f}")
+m1.metric("Current Price", f"${latest:.2f}")
+m2.metric("Total Return", f"{total_return:+.1f}%")
+m3.metric("Avg Annualized Volatility", f"{avg_vol:.1f}%")
+m4.metric("Price Range", f"${min_price:.2f} – ${max_price:.2f}")
 
 st.divider()
 
@@ -72,10 +76,10 @@ for ax in axes:
 
 # Chart 1: Price + MA
 ax1 = axes[0]
-ax1.plot(df.index, df["Close"], color="#4FC3F7", linewidth=1.5, label="Close Price")
+ax1.plot(df.index, close, color="#4FC3F7", linewidth=1.5, label="Close Price")
 ax1.plot(df.index, df[f"MA{ma_window}"], color="#FF8A65", linewidth=1.5,
          linestyle="--", label=f"{ma_window}-Day MA")
-ax1.fill_between(df.index, df["Close"], alpha=0.08, color="#4FC3F7")
+ax1.fill_between(df.index, close, alpha=0.08, color="#4FC3F7")
 ax1.set_title(f"{ticker} — Price & Moving Average")
 ax1.legend(facecolor="#1a1a2e", labelcolor="white")
 ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
@@ -105,9 +109,9 @@ st.divider()
 # --- Linear Regression Trend ---
 st.subheader("📈 Price Trend (Linear Regression)")
 
-clean = df[["Close"]].dropna().copy()
-X = np.arange(len(clean)).reshape(-1, 1)
-y = clean["Close"].values.flatten()
+clean_close = close.dropna()
+X = np.arange(len(clean_close)).reshape(-1, 1)
+y = clean_close.values.flatten()
 
 model = LinearRegression()
 model.fit(X, y)
@@ -120,8 +124,8 @@ ax.set_facecolor("#0e1117")
 ax.tick_params(colors="white")
 for spine in ax.spines.values():
     spine.set_edgecolor("#333")
-ax.plot(clean.index, y, color="#4FC3F7", linewidth=1, alpha=0.6, label="Actual")
-ax.plot(clean.index, trend, color="#FFD54F", linewidth=2, linestyle="--", label="Trend Line")
+ax.plot(clean_close.index, y, color="#4FC3F7", linewidth=1, alpha=0.6, label="Actual")
+ax.plot(clean_close.index, trend, color="#FFD54F", linewidth=2, linestyle="--", label="Trend Line")
 ax.legend(facecolor="#1a1a2e", labelcolor="white")
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
 ax.tick_params(colors="white")
@@ -130,10 +134,11 @@ plt.close()
 
 c1, c2 = st.columns(2)
 c1.metric("Trend Slope", f"${slope:+.4f} / day")
-c2.metric("R² Score", f"{r2:.4f}", help="How well the linear trend fits. Closer to 1 = stronger trend.")
+c2.metric("R² Score", f"{r2:.4f}", help="Closer to 1 = stronger trend.")
 
 st.divider()
 
 # --- Raw Data ---
 with st.expander("View Raw Data"):
     st.dataframe(df[["Open", "High", "Low", "Close", "Volume"]].tail(30).round(2))
+    
